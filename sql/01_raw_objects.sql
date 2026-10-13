@@ -71,9 +71,9 @@ CREATE TABLE IF NOT EXISTS ETL_RUN_LOG (
     SOURCE_NAME       VARCHAR NOT NULL,
     SOURCE_FILE       VARCHAR NOT NULL,
     TARGET_TABLE      VARCHAR NOT NULL,
-    STATUS            VARCHAR NOT NULL,   -- STARTED | SUCCESS | FAILED
+    STATUS            VARCHAR NOT NULL,   -- STARTED | SUCCESS | FAILED | SKIPPED
     SOURCE_ROW_COUNT  NUMBER(38,0),       -- rows in the local file
-    LOADED_ROW_COUNT  NUMBER(38,0),       -- rows in RAW for this file after the load
+    LOADED_ROW_COUNT  NUMBER(38,0),       -- rows in RAW for this file after the run
     FILE_SIZE_BYTES   NUMBER(38,0),
     FILE_SHA256       VARCHAR,
     SCHEMA_NOTES      VARCHAR,            -- schema drift observed in this file, if any

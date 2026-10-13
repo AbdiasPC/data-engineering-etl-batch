@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # dbt needs these to render profiles.yml; `dbt parse` never connects, so the
+      # values are placeholders and no warehouse credentials exist in CI.
+      SNOWFLAKE_ACCOUNT: ci-placeholder
+      SNOWFLAKE_USER: ci
+      SNOWFLAKE_PRIVATE_KEY_PATH: /nonexistent/rsa_key.p8
+      SNOWFLAKE_ROLE: CI_ROLE
+      SNOWFLAKE_WAREHOUSE: CI_WH
+      SNOWFLAKE_DATABASE: CI_DB
+      DBT_PROFILES_DIR: dbt
+      DBT_PROJECT_DIR: dbt
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt -c requirements.lock
+
+      - name: Lint
+        run: ruff check . && ruff format --check .
+
+      - name: Unit tests
+        run: pytest
+
+      - name: dbt parse
+        run: dbt deps && dbt parse
+
+      - name: Every dbt model and column is documented
+        run: python scripts/check_dbt_docs.py
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -f docker/Dockerfile -t nyc-taxi-elt:ci .
