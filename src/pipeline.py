@@ -8,8 +8,10 @@ import os
 import sys
 from collections.abc import Callable, Sequence
 
-from src.config import ConfigError, PipelineConfig
+from src.config import ConfigError, PipelineConfig, SnowflakeConfig
+from src.extract import run_extract
 from src.logging_utils import configure_logging
+from src.snowflake_client import check_connection
 
 logger = logging.getLogger("pipeline")
 
@@ -17,8 +19,20 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_CONFIG = 2
 
+
+def _extract(config: PipelineConfig) -> None:
+    run_extract(config)
+
+
+def _check_connection(config: PipelineConfig) -> None:
+    check_connection(SnowflakeConfig.from_env())
+
+
 # Each command takes the resolved config and raises on failure.
-COMMANDS: dict[str, Callable[[PipelineConfig], None]] = {}
+COMMANDS: dict[str, Callable[[PipelineConfig], None]] = {
+    "check-connection": _check_connection,
+    "extract": _extract,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:

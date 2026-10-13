@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build up down shell lint test clean
+.PHONY: help build up down shell lint test clean check-connection extract
 
 # Optional month range override, e.g. `make extract START=2025-01 END=2025-01`.
 RANGE := $(if $(START),--start $(START)) $(if $(END),--end $(END))
@@ -30,6 +30,12 @@ lint: .env ## Ruff lint and format check
 
 test: .env ## Lint plus unit tests (no network, no Snowflake)
 	$(RUN) sh -c "ruff check . && ruff format --check . && pytest"
+
+check-connection: .env ## Verify Snowflake connectivity as the pipeline role
+	$(RUN) python -m src.pipeline check-connection
+
+extract: .env ## Download and validate source files into ./data
+	$(RUN) python -m src.pipeline extract $(RANGE)
 
 clean: ## Remove downloaded data and build artifacts (local files only)
 	rm -rf data/* dbt/target dbt/dbt_packages dbt/logs logs .pytest_cache .ruff_cache
