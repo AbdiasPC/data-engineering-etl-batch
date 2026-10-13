@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 
 from src.config import ConfigError, PipelineConfig, SnowflakeConfig
 from src.extract import run_extract
+from src.load import run_load
 from src.logging_utils import configure_logging
 from src.snowflake_client import check_connection
 
@@ -24,6 +25,10 @@ def _extract(config: PipelineConfig) -> None:
     run_extract(config)
 
 
+def _load(config: PipelineConfig) -> None:
+    run_load(config, SnowflakeConfig.from_env())
+
+
 def _check_connection(config: PipelineConfig) -> None:
     check_connection(SnowflakeConfig.from_env())
 
@@ -32,6 +37,7 @@ def _check_connection(config: PipelineConfig) -> None:
 COMMANDS: dict[str, Callable[[PipelineConfig], None]] = {
     "check-connection": _check_connection,
     "extract": _extract,
+    "load": _load,
 }
 
 

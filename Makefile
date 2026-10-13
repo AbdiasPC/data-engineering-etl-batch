@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help build up down shell lint test clean check-connection extract
+.PHONY: help build up down shell lint test clean check-connection extract load
 
 # Optional month range override, e.g. `make extract START=2025-01 END=2025-01`.
 RANGE := $(if $(START),--start $(START)) $(if $(END),--end $(END))
@@ -36,6 +36,9 @@ check-connection: .env ## Verify Snowflake connectivity as the pipeline role
 
 extract: .env ## Download and validate source files into ./data
 	$(RUN) python -m src.pipeline extract $(RANGE)
+
+load: .env ## Stage files and COPY into RAW (idempotent, reconciled)
+	$(RUN) python -m src.pipeline load $(RANGE)
 
 clean: ## Remove downloaded data and build artifacts (local files only)
 	rm -rf data/* dbt/target dbt/dbt_packages dbt/logs logs .pytest_cache .ruff_cache
