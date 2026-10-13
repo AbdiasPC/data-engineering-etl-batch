@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    DBT_PROFILES_DIR=/app/dbt
+    DBT_PROFILES_DIR=/app/dbt \
+    DBT_PROJECT_DIR=/app/dbt
 
 RUN useradd --create-home --uid 1000 app
 

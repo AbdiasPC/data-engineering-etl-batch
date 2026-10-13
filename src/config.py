@@ -100,6 +100,7 @@ class PipelineConfig:
     weather_latitude: float
     weather_longitude: float
     weather_timezone: str
+    force_reload: bool = False  # reload files even if an identical copy is already in RAW
 
     @property
     def months(self) -> list[Month]:
@@ -111,6 +112,7 @@ class PipelineConfig:
         env: Mapping[str, str] | None = None,
         start: str | None = None,
         end: str | None = None,
+        force_reload: bool = False,
     ) -> PipelineConfig:
         """Build from the environment; explicit start/end (CLI flags) take precedence."""
         env = os.environ if env is None else env
@@ -121,6 +123,7 @@ class PipelineConfig:
             weather_latitude=_float(env, "WEATHER_LATITUDE", 40.7128),
             weather_longitude=_float(env, "WEATHER_LONGITUDE", -74.0060),
             weather_timezone=env.get("WEATHER_TIMEZONE", "").strip() or "America/New_York",
+            force_reload=force_reload,
         )
         month_range(config.start, config.end)  # fail fast on an invalid range
         return config
@@ -137,6 +140,8 @@ class SnowflakeConfig:
     warehouse: str
     database: str
     raw_schema: str
+    staging_schema: str
+    marts_schema: str
     private_key_passphrase: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -153,5 +158,7 @@ class SnowflakeConfig:
             warehouse=_identifier(env, "SNOWFLAKE_WAREHOUSE"),
             database=_identifier(env, "SNOWFLAKE_DATABASE"),
             raw_schema=_identifier(env, "SNOWFLAKE_RAW_SCHEMA", default="RAW"),
+            staging_schema=_identifier(env, "SNOWFLAKE_STAGING_SCHEMA", default="STAGING"),
+            marts_schema=_identifier(env, "SNOWFLAKE_MARTS_SCHEMA", default="MARTS"),
             private_key_passphrase=env.get("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE", "").strip() or None,
         )

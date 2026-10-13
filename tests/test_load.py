@@ -39,6 +39,9 @@ class FakeCursor:
             raise self.connection.copy_error
         if sql.startswith("SELECT COUNT"):
             self._result = (self.connection.loaded_count,)
+        elif sql.startswith("SELECT file_sha256"):
+            previous = self.connection.previous_sha256
+            self._result = (previous,) if previous else None
 
     def fetchone(self) -> tuple | None:
         return self._result
@@ -47,9 +50,15 @@ class FakeCursor:
 class FakeConnection:
     """Records statements; reports a configurable post-COPY row count."""
 
-    def __init__(self, loaded_count: int, copy_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        loaded_count: int,
+        copy_error: Exception | None = None,
+        previous_sha256: str | None = None,
+    ) -> None:
         self.loaded_count = loaded_count
         self.copy_error = copy_error
+        self.previous_sha256 = previous_sha256
         self.statements: list[str] = []
         self.params: list[object] = []
 
@@ -133,6 +142,7 @@ def test_load_file_deletes_then_copies_in_one_transaction():
     connection = FakeConnection(loaded_count=10)
     load.load_file(connection, trips_job(rows=10), BATCH)
     assert connection.verbs() == [
+        "SELECT",  # was this exact file already loaded?
         "INSERT",  # run log STARTED
         "PUT",
         "BEGIN",
@@ -146,6 +156,34 @@ def test_load_file_deletes_then_copies_in_one_transaction():
     delete_index = connection.verbs().index("DELETE")
     assert connection.params[delete_index] == ("yellow_tripdata_2025-01.parquet",)
     assert connection.params[-2][:3] == ("SUCCESS", 10, None)
+
+
+def test_unchanged_file_is_skipped_and_logged():
+    connection = FakeConnection(loaded_count=10, previous_sha256="abc")
+    load.load_file(connection, trips_job(rows=10), BATCH)
+    assert connection.verbs() == ["SELECT", "SELECT", "INSERT", "UPDATE"]
+    assert connection.params[-1][:2] == ("SKIPPED", 10)
+
+
+def test_force_reloads_an_unchanged_file():
+    connection = FakeConnection(loaded_count=10, previous_sha256="abc")
+    load.load_file(connection, trips_job(rows=10), BATCH, force=True)
+    assert "COPY" in connection.verbs()
+    assert connection.verbs()[0] == "INSERT"
+
+
+def test_changed_checksum_triggers_reload():
+    connection = FakeConnection(loaded_count=10, previous_sha256="different")
+    load.load_file(connection, trips_job(rows=10), BATCH)
+    assert "COPY" in connection.verbs()
+
+
+def test_unchanged_file_with_rows_missing_from_raw_is_reloaded():
+    connection = FakeConnection(loaded_count=10, previous_sha256="abc")
+    connection.loaded_count = 7  # RAW lost rows since the last successful load
+    with pytest.raises(load.ReconciliationError):
+        load.load_file(connection, trips_job(rows=10), BATCH)
+    assert "COPY" in connection.verbs()
 
 
 def test_row_count_mismatch_rolls_back_and_logs_failure():

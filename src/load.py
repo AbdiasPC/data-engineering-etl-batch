@@ -4,6 +4,10 @@ Per file, inside one transaction:
     DELETE rows previously loaded from this file -> COPY INTO -> count rows for this file.
 If the count differs from the local file's row count the transaction is rolled back, so a
 bad load never replaces a good one. Every attempt is recorded in ETL_RUN_LOG.
+
+A file whose checksum matches its last successful load, and whose rows are all still in
+RAW, is skipped (logged as SKIPPED) unless a reload is forced. Either way the end state
+is the same; skipping just avoids rewriting millions of unchanged rows.
 """
 
 from __future__ import annotations
@@ -173,18 +177,21 @@ def ensure_raw_objects(connection: SnowflakeConnection) -> None:
     connection.execute_string(RAW_OBJECTS_SQL.read_text(encoding="utf-8"))
 
 
-def _log_start(connection: SnowflakeConnection, job: LoadJob, batch_id: str) -> None:
+def _log_start(
+    connection: SnowflakeConnection, job: LoadJob, batch_id: str, status: str = "STARTED"
+) -> None:
     info = job.info
     _execute(
         connection,
         f"INSERT INTO {RUN_LOG} (batch_id, source_name, source_file, target_table, status, "
         "source_row_count, file_size_bytes, file_sha256, schema_notes, started_at) "
-        "VALUES (%s, %s, %s, %s, 'STARTED', %s, %s, %s, %s, CURRENT_TIMESTAMP())",
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP())",
         (
             batch_id,
             info.source,
             info.name,
             job.table,
+            status,
             info.row_count,
             info.size_bytes,
             info.sha256,
@@ -218,9 +225,7 @@ def _replace_and_reconcile(connection: SnowflakeConnection, job: LoadJob, batch_
             connection, f"DELETE FROM {job.table} WHERE _source_file = %s", (file_name,)
         )
         _execute(connection, copy_statement(job, batch_id))
-        loaded = _scalar(
-            connection, f"SELECT COUNT(*) FROM {job.table} WHERE _source_file = %s", (file_name,)
-        )
+        loaded = _rows_in_raw(connection, job)
         if loaded != job.info.row_count:
             raise ReconciliationError(
                 f"{file_name}: source has {job.info.row_count} rows, RAW has {loaded}"
@@ -242,9 +247,36 @@ def _replace_and_reconcile(connection: SnowflakeConnection, job: LoadJob, batch_
     return loaded
 
 
-def load_file(connection: SnowflakeConnection, job: LoadJob, batch_id: str) -> None:
+def _rows_in_raw(connection: SnowflakeConnection, job: LoadJob) -> int:
+    return _scalar(
+        connection, f"SELECT COUNT(*) FROM {job.table} WHERE _source_file = %s", (job.info.name,)
+    )
+
+
+def is_already_loaded(connection: SnowflakeConnection, job: LoadJob) -> bool:
+    """True if this exact file (by sha256) was loaded successfully and RAW still has it all."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT file_sha256 FROM {RUN_LOG} WHERE source_file = %s AND status = 'SUCCESS' "
+            "ORDER BY ended_at DESC LIMIT 1",
+            (job.info.name,),
+        )
+        row = cursor.fetchone()
+    if row is None or row[0] != job.info.sha256:
+        return False
+    return _rows_in_raw(connection, job) == job.info.row_count
+
+
+def load_file(
+    connection: SnowflakeConnection, job: LoadJob, batch_id: str, force: bool = False
+) -> None:
     """Stage, load and reconcile one file, recording the outcome in the run log."""
     info = job.info
+    if not force and is_already_loaded(connection, job):
+        _log_start(connection, job, batch_id, status="SKIPPED")
+        _log_end(connection, job, batch_id, "SKIPPED", info.row_count, None)
+        logger.info("Unchanged file already in RAW; skipped", extra={"file": info.name})
+        return
     _log_start(connection, job, batch_id)
     try:
         _execute(
@@ -269,6 +301,6 @@ def run_load(config: PipelineConfig, snowflake_config: SnowflakeConfig) -> str:
     with connect(snowflake_config) as connection:
         ensure_raw_objects(connection)
         for job in jobs:
-            load_file(connection, job, batch_id)
+            load_file(connection, job, batch_id, force=config.force_reload)
     logger.info("Load complete", extra={"batch_id": batch_id, "files": len(jobs)})
     return batch_id
