@@ -13,6 +13,9 @@ from pathlib import Path
 _MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
+# The pipeline must run as its own least-privilege role, never as an admin.
+ADMIN_ROLES = frozenset({"ACCOUNTADMIN", "ORGADMIN", "SECURITYADMIN", "SYSADMIN", "USERADMIN"})
+
 # Guard against accidentally loading years of data into a trial account.
 MAX_MONTHS = 12
 
@@ -139,11 +142,14 @@ class SnowflakeConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> SnowflakeConfig:
         env = os.environ if env is None else env
+        role = _identifier(env, "SNOWFLAKE_ROLE")
+        if role in ADMIN_ROLES:
+            raise ConfigError(f"SNOWFLAKE_ROLE={role} is an admin role; use the pipeline role")
         return cls(
             account=_require(env, "SNOWFLAKE_ACCOUNT"),
             user=_require(env, "SNOWFLAKE_USER"),
             private_key_path=Path(_require(env, "SNOWFLAKE_PRIVATE_KEY_PATH")),
-            role=_identifier(env, "SNOWFLAKE_ROLE"),
+            role=role,
             warehouse=_identifier(env, "SNOWFLAKE_WAREHOUSE"),
             database=_identifier(env, "SNOWFLAKE_DATABASE"),
             raw_schema=_identifier(env, "SNOWFLAKE_RAW_SCHEMA", default="RAW"),
