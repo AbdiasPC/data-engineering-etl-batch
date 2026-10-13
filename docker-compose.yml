@@ -1,0 +1,16 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: nyc-taxi-elt:local
+    env_file: .env
+    volumes:
+      # Source is bind-mounted so edits apply without a rebuild and
+      # downloaded data / dbt artifacts persist on the host.
+      - ./:/app
+      # Snowflake private key lives outside the image, read-only.
+      - ./secrets:/run/secrets:ro
+    # Idle by default: `make up` gives a container to `make shell` into.
+    # Pipeline steps run as one-off containers via `docker compose run --rm`.
+    command: ["sleep", "infinity"]

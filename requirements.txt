@@ -1,0 +1,6 @@
+# Runtime dependencies. Top-level pins; the full resolved set is in requirements.lock.
+dbt-core==1.12.5
+dbt-snowflake==1.12.1
+snowflake-connector-python==4.8.0
+pyarrow==25.0.1
+requests==2.34.2
