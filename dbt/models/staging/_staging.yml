@@ -1,0 +1,188 @@
+version: 2
+
+models:
+  - name: stg_yellow_trips
+    description: >
+      One row per raw yellow taxi trip: columns renamed and cast, codes decoded, and
+      data-quality rules evaluated into boolean flags. No rows are removed; is_valid_trip
+      summarises the flags so downstream models can decide what to exclude.
+    columns:
+      - name: trip_key
+        description: >
+          Surrogate key: hash of source file name and row number within the file. TLC
+          provides no trip identifier, and this is stable when a month is reloaded.
+        data_tests:
+          - not_null
+      - name: source_month
+        description: First day of the month the source file covers, parsed from its name.
+        data_tests:
+          - not_null
+      - name: vendor_id
+        description: "TPEP provider code: 1 Creative Mobile Technologies, 2 Curb Mobility, 6 Myle Technologies, 7 Helix."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 6, 7]
+                quote: false
+              config:
+                severity: warn
+      - name: rate_code_id
+        description: Final rate code in effect at the end of the trip. Null on Flex Fare records.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 99]
+                quote: false
+      - name: payment_type_id
+        description: Numeric code for how the passenger paid (0 to 6).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6]
+                quote: false
+      - name: pickup_zone_id
+        description: TLC taxi zone where the meter was engaged.
+        data_tests:
+          - not_null
+      - name: dropoff_zone_id
+        description: TLC taxi zone where the meter was disengaged.
+        data_tests:
+          - not_null
+      - name: pickup_at
+        description: When the meter was engaged, New York local time (no time zone stored).
+      - name: dropoff_at
+        description: When the meter was disengaged, New York local time (no time zone stored).
+      - name: passenger_count
+        description: Driver-entered passenger count. Null on Flex Fare records; 0 occurs.
+      - name: trip_distance_miles
+        description: Trip distance in miles reported by the taximeter.
+      - name: store_and_fwd_flag
+        description: Y if the record was held in vehicle memory before being sent to the vendor, else N.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Y", "N"]
+              config:
+                severity: warn
+      - name: fare_amount
+        description: Time-and-distance fare from the meter, USD. Negative on reversals.
+      - name: extra_amount
+        description: Miscellaneous extras and surcharges, USD.
+      - name: mta_tax_amount
+        description: MTA tax triggered by the metered rate in use, USD.
+      - name: tip_amount
+        description: Tip, USD. Populated for credit card tips only; cash tips are not recorded.
+      - name: tolls_amount
+        description: Total tolls paid in the trip, USD.
+      - name: improvement_surcharge_amount
+        description: Improvement surcharge assessed at flag drop, USD.
+      - name: congestion_surcharge_amount
+        description: NYS congestion surcharge collected, USD. Null on Flex Fare records.
+      - name: airport_fee_amount
+        description: Fee for pickups at LaGuardia and JFK airports, USD. Null on Flex Fare records.
+      - name: cbd_congestion_fee_amount
+        description: MTA Congestion Relief Zone charge, USD. Charged from 2025-01-05; null in files before 2025.
+      - name: total_amount
+        description: Total charged to the passenger, USD. Excludes cash tips.
+      - name: source_file
+        description: Parquet file the row was loaded from.
+      - name: file_row_number
+        description: Row position within the source file.
+      - name: batch_id
+        description: Pipeline run that loaded the row; joins to RAW.ETL_RUN_LOG.
+      - name: loaded_at
+        description: When the row was loaded into RAW.
+      - name: trip_duration_minutes
+        description: Minutes between pickup and dropoff. Negative when dropoff precedes pickup.
+      - name: payment_type_name
+        description: Payment type decoded from the TLC data dictionary.
+      - name: rate_code_name
+        description: Rate code decoded from the TLC data dictionary.
+      - name: is_pickup_outside_source_month
+        description: True when the pickup time is not inside the month the source file covers. Invalidates the trip.
+      - name: is_non_positive_duration
+        description: True when dropoff is at or before pickup. Invalidates the trip.
+      - name: is_excessive_duration
+        description: True when the trip lasts longer than max_trip_duration_minutes (24 hours). Invalidates the trip.
+      - name: is_negative_amount
+        description: True when fare or total is negative (reversals and adjustments). Invalidates the trip.
+      - name: is_fare_outlier
+        description: True when the fare exceeds max_fare_amount (1,000 USD). Invalidates the trip.
+      - name: is_distance_outlier
+        description: True when distance exceeds max_trip_distance_miles (100 miles). Invalidates the trip.
+      - name: is_zero_distance
+        description: True when the meter reported zero miles. Informational; does not invalidate the trip.
+      - name: is_unknown_zone
+        description: True when pickup or dropoff is zone 264 (Unknown) or 265 (Outside of NYC). Informational.
+      - name: is_valid_trip
+        description: True when none of the invalidating flags is set. Aggregated marts use only valid trips.
+        data_tests:
+          - not_null
+
+  - name: stg_taxi_zones
+    description: One row per TLC taxi zone, with the source's literal "N/A" strings converted to null.
+    columns:
+      - name: zone_id
+        description: TLC zone identifier (LocationID), 1 to 265.
+        data_tests:
+          - not_null
+          - unique
+      - name: borough
+        description: Borough name, or "Unknown". Null for zone 265 (Outside of NYC).
+      - name: zone_name
+        description: Zone name. Null for zone 264 (Unknown).
+      - name: service_zone
+        description: "TLC service zone: Yellow Zone, Boro Zone, Airports or EWR. Null for zones 264 and 265."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["Yellow Zone", "Boro Zone", "Airports", "EWR"]
+      - name: source_file
+        description: CSV file the row was loaded from.
+      - name: loaded_at
+        description: When the row was loaded into RAW.
+
+  - name: stg_weather_daily
+    description: >
+      One row per calendar day of New York City weather, flattened from Open-Meteo
+      responses. Values are reanalysis model output for the grid cell nearest the
+      requested coordinates, not a weather-station observation.
+    columns:
+      - name: weather_date
+        description: Calendar date in the America/New_York time zone.
+        data_tests:
+          - not_null
+          - unique
+      - name: temperature_max_c
+        description: Maximum air temperature at 2 m, degrees Celsius.
+      - name: temperature_min_c
+        description: Minimum air temperature at 2 m, degrees Celsius.
+      - name: temperature_mean_c
+        description: Mean air temperature at 2 m, degrees Celsius.
+        data_tests:
+          - not_null
+      - name: precipitation_mm
+        description: Total precipitation (rain, showers and snow water equivalent), millimetres.
+        data_tests:
+          - not_null
+      - name: rain_mm
+        description: Rain total, millimetres.
+      - name: snowfall_cm
+        description: Snowfall total, centimetres.
+      - name: wind_speed_max_kmh
+        description: Maximum wind speed at 10 m, km/h.
+      - name: wind_gusts_max_kmh
+        description: Maximum wind gust at 10 m, km/h.
+      - name: grid_latitude
+        description: Latitude of the model grid cell Open-Meteo actually used.
+      - name: grid_longitude
+        description: Longitude of the model grid cell Open-Meteo actually used.
+      - name: source_file
+        description: JSON file the day was loaded from.
+      - name: loaded_at
+        description: When the row was loaded into RAW.
+      - name: is_rainy_day
+        description: True when precipitation is at least rainy_day_precipitation_mm (1 mm).
+      - name: is_snowy_day
+        description: True when any snowfall was recorded.

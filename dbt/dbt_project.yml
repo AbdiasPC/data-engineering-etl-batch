@@ -1,0 +1,28 @@
+name: nyc_taxi
+version: "1.0.0"
+config-version: 2
+profile: nyc_taxi
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: target
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Thresholds for the validity flags in stg_yellow_trips. Deliberately generous: they
+  # catch meter errors (an 863,372 USD fare, a 320,136 mile trip), not unusual real trips.
+  max_trip_duration_minutes: 1440
+  max_trip_distance_miles: 100
+  max_fare_amount: 1000
+  # WMO convention: a day with at least 1 mm of precipitation is a wet day.
+  rainy_day_precipitation_mm: 1.0
+
+models:
+  nyc_taxi:
+    staging:
+      +materialized: view
+      +schema: "{{ env_var('SNOWFLAKE_STAGING_SCHEMA', 'STAGING') }}"
+    marts:
+      +materialized: table
+      +schema: "{{ env_var('SNOWFLAKE_MARTS_SCHEMA', 'MARTS') }}"

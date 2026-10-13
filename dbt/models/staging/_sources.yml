@@ -1,0 +1,67 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Source data loaded unmodified by the Python pipeline (src/load.py). Each table also
+      carries _SOURCE_FILE, _FILE_ROW_NUMBER, _BATCH_ID and _LOADED_AT.
+    database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+    schema: "{{ env_var('SNOWFLAKE_RAW_SCHEMA', 'RAW') }}"
+    tables:
+      - name: yellow_trips
+        description: >
+          NYC TLC yellow taxi trip records, one row per trip, from the monthly Parquet
+          files. Not created by the TLC; submitted by technology vendors.
+        config:
+          loaded_at_field: _loaded_at
+          # Load-recency check. TLC publishes one file a month, so nothing new in RAW
+          # for 45 days suggests the pipeline has stopped running.
+          freshness:
+            warn_after: {count: 45, period: day}
+        columns:
+          - name: _source_file
+            description: Parquet file the row was loaded from.
+            data_tests:
+              - not_null
+          - name: _file_row_number
+            description: Row position within the source file.
+            data_tests:
+              - not_null
+
+      - name: taxi_zone_lookup
+        description: TLC taxi zone lookup (265 zones), loaded as text exactly as published.
+        columns:
+          - name: locationid
+            description: TLC zone identifier, as text.
+            data_tests:
+              - not_null
+              - unique
+
+      - name: weather_daily_json
+        description: >
+          Open-Meteo Historical Weather API responses, one row per month requested. The
+          PAYLOAD column holds the full JSON document.
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 45, period: day}
+        columns:
+          - name: payload
+            description: Full API response; daily values are parallel arrays under "daily".
+            data_tests:
+              - not_null
+          - name: _source_file
+            description: JSON file the row was loaded from (one per month).
+            data_tests:
+              - not_null
+              - unique
+
+      - name: etl_run_log
+        description: One row per file per pipeline run, with status and reconciled row counts.
+        columns:
+          - name: status
+            description: STARTED, SUCCESS, FAILED, or SKIPPED (identical file already loaded).
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: ["STARTED", "SUCCESS", "FAILED", "SKIPPED"]
