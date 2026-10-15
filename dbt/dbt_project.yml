@@ -15,6 +15,9 @@ vars:
   max_trip_duration_minutes: 1440
   max_trip_distance_miles: 100
   max_fare_amount: 1000
+  # The metered fare starts at a 3.00 USD initial charge, so a smaller positive fare is
+  # an adjustment; a tip percentage on it is meaningless (one 0.01 fare had an 80 USD tip).
+  min_fare_for_tip_pct: 3.00
   # WMO convention: a day with at least 1 mm of precipitation is a wet day.
   rainy_day_precipitation_mm: 1.0
 

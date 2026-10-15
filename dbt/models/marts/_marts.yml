@@ -142,7 +142,7 @@ models:
       - name: total_amount
         description: Total charged to the passenger, USD. Excludes cash tips.
       - name: tip_pct
-        description: Tip as a percentage of the fare. Null when the fare is not positive.
+        description: Tip as a percentage of the fare. Null when the fare is below the 3.00 USD initial charge (min_fare_for_tip_pct), where the ratio is meaningless.
       - name: is_pickup_outside_source_month
         description: True when the pickup time is not inside the month the source file covers.
       - name: is_non_positive_duration

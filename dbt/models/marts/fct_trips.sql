@@ -46,7 +46,10 @@ select
     airport_fee_amount,
     cbd_congestion_fee_amount,
     total_amount,
-    case when fare_amount > 0 then (tip_amount / fare_amount * 100)::number(12, 2) end as tip_pct,
+    case
+        when fare_amount >= {{ var('min_fare_for_tip_pct') }}
+            then (tip_amount / fare_amount * 100)::number(12, 2)
+    end as tip_pct,
 
     is_pickup_outside_source_month,
     is_non_positive_duration,
