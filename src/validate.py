@@ -43,7 +43,7 @@ def run_query(connection: SnowflakeConnection, sql: str) -> tuple[list[str], lis
 def format_table(columns: list[str], rows: list[tuple[Any, ...]]) -> str:
     """Render a result set as a plain-text table."""
     cells = [[("" if value is None else str(value)) for value in row] for row in rows]
-    widths = [max(len(c), *(len(r[i]) for r in cells)) for i, c in enumerate(columns)]
+    widths = [max([len(c), *(len(r[i]) for r in cells)]) for i, c in enumerate(columns)]
     lines = [
         "  ".join(name.ljust(width) for name, width in zip(columns, widths, strict=True)),
         "  ".join("-" * width for width in widths),

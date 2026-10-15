@@ -36,3 +36,7 @@ def test_sql_directories_are_not_empty():
 def test_format_table_aligns_columns_and_blanks_nulls():
     table = validate.format_table(["NAME", "N"], [("a", 1), ("longer", None)])
     assert table.splitlines() == ["NAME    N", "------  -", "a       1", "longer   "]
+
+
+def test_format_table_handles_empty_result():
+    assert validate.format_table(["NAME"], []).splitlines() == ["NAME", "----"]
