@@ -105,7 +105,7 @@ All three were checked against the live source before any code was written; URLs
 
 **RAW is loaded as-is, with four metadata columns.** `_SOURCE_FILE`, `_FILE_ROW_NUMBER`, `_BATCH_ID` and `_LOADED_AT` are added to every row; nothing is cleaned or filtered in Python. Trade-off: RAW columns are typed (not a single VARIANT), which is easier to query and cheaper to scan, at the cost of needing an explicit answer to schema drift.
 
-**Idempotent loads: delete by file, then COPY, in one transaction.** For each file the load deletes rows previously loaded from that file, runs `COPY INTO ... FORCE = TRUE`, counts the rows now in RAW for that file, and commits only if the count equals the source file's row count. A mismatch rolls back, so a failed load never replaces a good one. A file whose sha256 matches its last successful load is skipped (logged as `SKIPPED`), which avoids rewriting millions of unchanged rows; `FORCE=1` reloads anyway. Trade-off: `FORCE = TRUE` bypasses Snowflake's own load-history deduplication, so correctness rests on the delete being in the same transaction.
+**Idempotent loads: delete by file, then COPY, in one transaction.** For each file the load deletes rows previously loaded from that file, runs `COPY INTO ... FORCE = TRUE`, counts the rows now in RAW for that file, and commits only if the count equals the source file's row count. A mismatch rolls back, so a failed load never replaces a good one. A file whose sha256 matches its last successful load is skipped (logged as `SKIPPED`), which avoids rewriting millions of unchanged rows; `FORCE=1` reloads anyway, which is needed after changing how files are parsed. Weather files reload on every run because each Open-Meteo response embeds its own generation time, so its checksum always changes; that is three small rows. `ETL_RUN_LOG` records every file on every run as `SUCCESS`, `SKIPPED` or `FAILED`, with source and loaded row counts, size, sha256, any schema-drift notes and timings. Trade-off: `FORCE = TRUE` bypasses Snowflake's own load-history deduplication, so correctness rests on the delete being in the same transaction.
 
 **Schema drift is handled by an explicit contract** in `src/sources.py`, checked against each Parquet file's footer before upload. The TLC files really do drift:
 
@@ -129,12 +129,55 @@ The `COPY` select list is generated from the file's actual column names, so the 
 
 **One image, pinned.** Python and dbt share an image running as a non-root user. Top-level versions are pinned in `requirements*.txt` and the full resolved set in `requirements.lock`.
 
+## Results (default run: January to March 2025)
+
+| | |
+|---|---|
+| Trips loaded to RAW and the fact | 11,198,026 (3,475,226 + 3,577,543 + 4,145,257; equal to the Parquet footers) |
+| Valid trips used by the aggregates | 10,631,360 (94.9%) |
+| `dbt build` | PASS=58, WARN=3, ERROR=0 |
+| Validation checks | 9 of 9 passed |
+| `make pipeline` re-run | 49 seconds, no rows rewritten |
+
+Answers from `make analytics` (queries in `sql/analytics/`; valid trips only):
+
+1. **Demand by hour and borough.** Demand builds through the day to a peak at 18:00 (7.5% of all trips), and the quietest hour is 04:00 (0.7%). Manhattan accounts for 87 to 89% of pickups every month. Queens is second, at 8 to 9%, and its pickups are dominated by the airports: they average 11 miles and about $65 per trip, against 2.2 miles and $23 in Manhattan.
+2. **Tipping by payment type.** Credit card trips (70% of the total) tip 26% of the fare on average, and 94% of them tip at all. Cash trips show $0.00 tips, but that reflects the data, not the passengers: TLC does not record cash tips. "Flex Fare" (code 0, 18% of trips) is a newer category whose records leave several fields empty; only 10% of those trips show a tip.
+3. **Rain.** Rainy days (at least 1 mm) averaged 2% more trips than dry days on weekdays (118,745 vs 116,529) and 4% more at weekends. Weekday fares were $0.68 higher on rainy days. With 26 rainy days in one winter quarter, this is a hint, not a finding; seasonality is not controlled for.
+4. **Busiest routes.** The top four pickup-dropoff pairs are all short hops within or between Upper East Side South and North (about 1 mile, $7 to $9). Midtown Center to the Upper East Side follows.
+5. **Boroughs by month.** Trips grew from 3.33 million in January to 3.91 million in March. Brooklyn's share rose from 1.8% to 3.2% over the quarter.
+
 ## Data quality
+
+How much of the data each rule flags (`fct_trips`, 11,198,026 rows):
+
+| Flag | Rows | Share | Effect |
+|---|---|---|---|
+| Negative fare or total (refunds, reversals) | 536,614 | 4.79% | invalid |
+| Dropoff at or before pickup | 29,495 | 0.26% | invalid |
+| Distance over 100 miles (max 320,136) | 548 | <0.01% | invalid |
+| Pickup outside the file's month (one in 2007) | 86 | <0.01% | invalid |
+| Duration over 24 hours | 47 | <0.01% | invalid |
+| Fare over $1,000 (max $863,372) | 14 | <0.01% | invalid |
+| Zero distance | 294,386 | 2.63% | informational |
+| Unknown or outside-NYC zone | 81,780 | 0.73% | informational |
+
+### The three dbt warnings
+
+All three are known problems in the source data. They are tested at severity `warn` so that each run reports the counts. Each count matches an independent count taken with pyarrow from the Parquet files before loading.
+
+| Test | Count | Explanation |
+|---|---|---|
+| `assert_pickup_within_source_month` | 86 | Each monthly file contains a few trips from another month: mostly minutes either side of the boundary, plus one dated 2007-12-05 in the March file. They are flagged and excluded from aggregates. |
+| `assert_dropoff_not_before_pickup` | 298 | Meter clock errors where the dropoff precedes the pickup. These are flagged; the wider `is_non_positive_duration` rule also catches the 29,197 zero-length trips. |
+| `accepted_range` on `fct_trips.fare_amount` (min 0) | 535,497 | Negative fares are refunds and reversals recorded as separate rows, about 5% of each month. Kept in the fact, so revenue can be reconciled if needed, but excluded from averages. |
+
+### Where each check runs
 
 | Where | What | On failure |
 |---|---|---|
 | Extract | Schema contract per source; weather must cover every day of the month; sha256 and size logged per file | File rejected, run stops |
-| Load | Source row count vs RAW row count per file, inside the load transaction | Rollback, `FAILED` in `ETL_RUN_LOG`, run stops |
+| Load | Per file, inside the load transaction: source row count = RAW row count, and the minimum and maximum pickup times in RAW = those in the Parquet file | Rollback, `FAILED` in `ETL_RUN_LOG`, run stops |
 | dbt, severity `error` | `unique` / `not_null` keys, `relationships` from fact to dimensions, `accepted_values` for payment type and rate code, fact row count equals RAW per file, every date has weather | `dbt build` fails, run stops |
 | dbt, severity `warn` | Known dirty data: dropoff before pickup, pickup outside the file's month, negative fares | Reported, run continues |
 | dbt source freshness | Nothing loaded into RAW for 45 days | Warning |
@@ -147,6 +190,22 @@ The `COPY` select list is generated from the file's actual column names, so the 
 - 15-minute statement timeout on the warehouse.
 - Staging models are views; unchanged files are not reloaded; the fact is incremental.
 - A 12-month cap on the month range guards against loading years of data by accident.
+
+**Measured usage.** A cold run that loads all three months and does a full dbt build used 91 seconds of warehouse execution time, from `INFORMATION_SCHEMA.QUERY_HISTORY_BY_WAREHOUSE`. File uploads (`PUT`) run on the client and use no warehouse compute. X-Small bills 1 credit per hour, per second, with a 60-second minimum each time it resumes. Counting the idle minute before auto-suspend, a cold run therefore costs about **0.03 to 0.07 credits**: a few cents, and about 1% of the monthly monitor quota. A re-run with nothing new costs less. To see exact metered credits (visible to `ACCOUNTADMIN`, delayed by up to a few hours):
+
+```sql
+SELECT start_time, credits_used
+FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+WHERE warehouse_name = 'NYC_TAXI_WH' ORDER BY start_time DESC;
+```
+
+## What testing caught
+
+Running against real data found three defects that the unit tests' assumptions had hidden:
+
+- **Every timestamp was wrong, yet row counts reconciled.** Without `USE_LOGICAL_TYPE = TRUE`, Snowflake exposes Parquet's int64-microsecond timestamps as plain integers, and the cast read them as seconds, putting pickups in the year 55,003,418. The first `dbt build` failed on a numeric overflow, which led to the cause. The fix: the file-format option, plus a value check in the load transaction. The minimum and maximum pickup times in RAW must now equal those in the Parquet file, so this kind of corruption fails the load. Row counts alone are not enough.
+- **A connection dropped mid-download was not retried.** It surfaces as `ChunkedEncodingError`, which the first version of the retry logic did not treat as transient. A unit test with a truncated body caught it.
+- **Tip percentage was meaningless on tiny fares.** One $0.01 fare carried an $80 tip, giving 800,000%. `tip_pct` is now computed only when the fare is at least $3.00, the metered initial charge (dbt var `min_fare_for_tip_pct`).
 
 ## Repository layout
 
@@ -168,6 +227,13 @@ docker/Dockerfile    docker-compose.yml    Makefile    .github/workflows/ci.yml
 - Three months is too short to separate weather effects from seasonality.
 - The extract keeps a local copy of each file; there is no archive of what was loaded beyond the run log's checksum.
 - A new column added to the contract needs a manual `ALTER TABLE ... ADD COLUMN` on an existing RAW table.
+
+## Where this differs from the original brief
+
+- **Key-pair instead of password authentication**, because Snowflake service users cannot use passwords (see design decisions).
+- **dbt 1.12 test syntax:** tests are declared under `data_tests:`, with their parameters under `arguments:` and severity under `config:`. This is the current form, and `dbt parse --show-all-deprecations` reports no deprecations.
+- **Unchanged files are skipped** rather than reloaded on every run, with `FORCE=1` to reload. The delete-then-COPY path still guarantees idempotency when a file is reloaded.
+- **Pinned versions:** dbt-snowflake 1.12.1 rather than 1.12.2, which was published the day the project started. Likewise pyarrow 25.0.1 and ruff 0.16.9.
 
 ## Future improvements (deliberately out of scope)
 
