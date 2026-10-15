@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import requests
 
@@ -160,6 +161,13 @@ def inspect_trips(path: Path) -> tuple[FileInfo, sources.TripSchemaCheck]:
     parquet = pq.ParquetFile(path)
     check = sources.validate_trip_schema(parquet.schema_arrow)
     return _file_info(sources.TRIPS, path, parquet.metadata.num_rows), check
+
+
+def column_range(path: Path, column: str) -> tuple[Any, Any]:
+    """Min and max of one Parquet column, read without loading the rest of the file."""
+    values = pq.read_table(path, columns=[column]).column(column)
+    result = pc.min_max(values)
+    return result["min"].as_py(), result["max"].as_py()
 
 
 def inspect_zones(path: Path) -> FileInfo:

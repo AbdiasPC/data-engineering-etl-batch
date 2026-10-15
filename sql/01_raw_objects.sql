@@ -10,10 +10,13 @@
 CREATE STAGE IF NOT EXISTS LANDING
   COMMENT = 'Internal landing stage; files are removed after a successful load';
 
-CREATE FILE FORMAT IF NOT EXISTS FF_PARQUET TYPE = PARQUET;
-CREATE FILE FORMAT IF NOT EXISTS FF_ZONES_CSV
+-- File formats hold no data, so they are replaced on every run to pick up changes.
+-- USE_LOGICAL_TYPE: without it, Parquet timestamps (int64 microseconds) surface in $1 as
+-- plain integers, and casting those to TIMESTAMP reads them as seconds.
+CREATE OR REPLACE FILE FORMAT FF_PARQUET TYPE = PARQUET USE_LOGICAL_TYPE = TRUE;
+CREATE OR REPLACE FILE FORMAT FF_ZONES_CSV
   TYPE = CSV SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = '"';
-CREATE FILE FORMAT IF NOT EXISTS FF_JSON TYPE = JSON;
+CREATE OR REPLACE FILE FORMAT FF_JSON TYPE = JSON;
 
 -- Column names are the TLC names lower-cased; types are the widest seen across monthly
 -- files (see src/sources.py TRIP_COLUMNS, which a unit test keeps in sync with this DDL).

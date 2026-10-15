@@ -16,6 +16,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from snowflake.connector import SnowflakeConnection
@@ -47,6 +48,9 @@ class LoadJob:
     columns: tuple[str, ...]  # target columns, excluding metadata
     expressions: tuple[str, ...]  # one SELECT expression per target column
     schema_notes: str | None = None
+    # (SQL aggregate over this file's RAW rows, value it must equal). Row counts alone
+    # cannot catch a load that keeps every row but mangles values.
+    value_checks: tuple[tuple[str, object], ...] = ()
 
 
 def _literal(value: str) -> str:
@@ -66,7 +70,11 @@ def stage_path(info: FileInfo) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def trip_job(info: FileInfo, check: sources.TripSchemaCheck) -> LoadJob:
+def trip_job(
+    info: FileInfo,
+    check: sources.TripSchemaCheck,
+    pickup_range: tuple[datetime, datetime] | None = None,
+) -> LoadJob:
     """Map this file's actual column names onto the canonical RAW columns.
 
     Parquet field names are case-sensitive in `$1:"name"`, so the names come from the
@@ -90,6 +98,14 @@ def trip_job(info: FileInfo, check: sources.TripSchemaCheck) -> LoadJob:
         columns=(*(spec.name for spec in sources.TRIP_COLUMNS), "_extra_columns"),
         expressions=tuple(expressions),
         schema_notes="; ".join(check.notes) or None,
+        value_checks=(
+            (
+                ("MIN(tpep_pickup_datetime)", pickup_range[0]),
+                ("MAX(tpep_pickup_datetime)", pickup_range[1]),
+            )
+            if pickup_range
+            else ()
+        ),
     )
 
 
@@ -150,7 +166,9 @@ def build_jobs(config: PipelineConfig) -> list[LoadJob]:
     jobs = [zone_job(extract.inspect_zones(zones))]
     for month in config.months:
         trips = sources.local_path(data_dir, sources.TRIPS, sources.trip_filename(month))
-        jobs.append(trip_job(*extract.inspect_trips(trips)))
+        info, check = extract.inspect_trips(trips)
+        pickup_column = check.column_map["tpep_pickup_datetime"]
+        jobs.append(trip_job(info, check, extract.column_range(trips, pickup_column)))
         weather = sources.local_path(data_dir, sources.WEATHER, sources.weather_filename(month))
         jobs.append(weather_job(extract.inspect_weather(weather, month)))
     return jobs
@@ -161,10 +179,14 @@ def build_jobs(config: PipelineConfig) -> list[LoadJob]:
 # --------------------------------------------------------------------------------------
 
 
-def _scalar(connection: SnowflakeConnection, sql: str, params: Sequence | None = None) -> int:
+def _value(connection: SnowflakeConnection, sql: str, params: Sequence | None = None) -> object:
     with connection.cursor() as cursor:
         cursor.execute(sql, params)
-        return int(cursor.fetchone()[0])
+        return cursor.fetchone()[0]
+
+
+def _scalar(connection: SnowflakeConnection, sql: str, params: Sequence | None = None) -> int:
+    return int(_value(connection, sql, params))
 
 
 def _execute(connection: SnowflakeConnection, sql: str, params: Sequence | None = None) -> int:
@@ -230,6 +252,16 @@ def _replace_and_reconcile(connection: SnowflakeConnection, job: LoadJob, batch_
             raise ReconciliationError(
                 f"{file_name}: source has {job.info.row_count} rows, RAW has {loaded}"
             )
+        for expression, expected in job.value_checks:
+            actual = _value(
+                connection,
+                f"SELECT {expression} FROM {job.table} WHERE _source_file = %s",
+                (file_name,),
+            )
+            if actual != expected:
+                raise ReconciliationError(
+                    f"{file_name}: {expression} is {actual} in RAW but {expected} in the source"
+                )
         _execute(connection, "COMMIT")
     except BaseException:
         _execute(connection, "ROLLBACK")

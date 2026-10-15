@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -39,6 +40,8 @@ class FakeCursor:
             raise self.connection.copy_error
         if sql.startswith("SELECT COUNT"):
             self._result = (self.connection.loaded_count,)
+        elif sql.startswith(("SELECT MIN", "SELECT MAX")):
+            self._result = (self.connection.raw_value,)
         elif sql.startswith("SELECT file_sha256"):
             previous = self.connection.previous_sha256
             self._result = (previous,) if previous else None
@@ -55,7 +58,9 @@ class FakeConnection:
         loaded_count: int,
         copy_error: Exception | None = None,
         previous_sha256: str | None = None,
+        raw_value: object = None,
     ) -> None:
+        self.raw_value = raw_value
         self.loaded_count = loaded_count
         self.copy_error = copy_error
         self.previous_sha256 = previous_sha256
@@ -184,6 +189,49 @@ def test_unchanged_file_with_rows_missing_from_raw_is_reloaded():
     with pytest.raises(load.ReconciliationError):
         load.load_file(connection, trips_job(rows=10), BATCH)
     assert "COPY" in connection.verbs()
+
+
+def test_trip_job_checks_pickup_range_when_given():
+    low, high = datetime(2025, 1, 1, 0, 0, 1), datetime(2025, 1, 31, 23, 59)
+    info = file_info(sources.TRIPS, "yellow_tripdata_2025-01.parquet", 10)
+    job = load.trip_job(info, sources.validate_trip_schema(trip_schema()), (low, high))
+    assert job.value_checks == (
+        ("MIN(tpep_pickup_datetime)", low),
+        ("MAX(tpep_pickup_datetime)", high),
+    )
+
+
+def test_mangled_values_roll_back_even_when_row_counts_match():
+    """The real failure this guards against: timestamps loaded as seconds, not microseconds."""
+    expected = datetime(2025, 1, 1)
+    job = load.LoadJob(
+        info=file_info(sources.TRIPS, "yellow_tripdata_2025-01.parquet", 10),
+        table="YELLOW_TRIPS",
+        file_format="FF_PARQUET",
+        columns=("tpep_pickup_datetime",),
+        expressions=("$1",),
+        value_checks=(("MIN(tpep_pickup_datetime)", expected),),
+    )
+    connection = FakeConnection(loaded_count=10, raw_value=datetime(9999, 1, 1))
+    with pytest.raises(load.ReconciliationError, match="MIN\\(tpep_pickup_datetime\\)"):
+        load.load_file(connection, job, BATCH)
+    assert "COMMIT" not in connection.verbs()
+    assert connection.verbs()[-2:] == ["ROLLBACK", "UPDATE"]
+
+
+def test_matching_values_commit():
+    expected = datetime(2025, 1, 1)
+    job = load.LoadJob(
+        info=file_info(sources.TRIPS, "yellow_tripdata_2025-01.parquet", 10),
+        table="YELLOW_TRIPS",
+        file_format="FF_PARQUET",
+        columns=("tpep_pickup_datetime",),
+        expressions=("$1",),
+        value_checks=(("MIN(tpep_pickup_datetime)", expected),),
+    )
+    connection = FakeConnection(loaded_count=10, raw_value=expected)
+    load.load_file(connection, job, BATCH)
+    assert "COMMIT" in connection.verbs()
 
 
 def test_row_count_mismatch_rolls_back_and_logs_failure():

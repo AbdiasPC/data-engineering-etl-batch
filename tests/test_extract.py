@@ -119,6 +119,17 @@ def test_download_retries_then_fails_on_truncated_body(tmp_path, session):
     assert not dest.exists()
 
 
+def test_column_range(tmp_path):
+    import datetime as dt
+
+    import pyarrow as pa
+
+    path = tmp_path / "t.parquet"
+    times = [dt.datetime(2025, 1, 5), dt.datetime(2025, 1, 2), None, dt.datetime(2025, 1, 9)]
+    pq.write_table(pa.table({"ts": pa.array(times, pa.timestamp("us"))}), path)
+    assert extract.column_range(path, "ts") == (dt.datetime(2025, 1, 2), dt.datetime(2025, 1, 9))
+
+
 def test_sha256_of(tmp_path):
     path = tmp_path / "f"
     path.write_bytes(b"abc")
