@@ -67,8 +67,8 @@ openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out secrets/rsa_key.p8 -
 openssl rsa -in secrets/rsa_key.p8 -pubout -out secrets/rsa_key.pub
 ```
 
-3. Open `sql/00_snowflake_setup.sql`, replace `<PASTE_PUBLIC_KEY_BODY>` with the contents of `secrets/rsa_key.pub` without the `BEGIN`/`END` lines (joined into one line), and run the whole script in a Snowsight worksheet as `ACCOUNTADMIN`. It creates the database, schemas, an X-Small warehouse, a resource monitor, and a least-privilege role and service user.
-4. In `.env`, set `SNOWFLAKE_ACCOUNT` to your account identifier in `orgname-accountname` form (Snowsight: account menu, "View account details"). The other defaults match the setup script.
+3. Paste `sql/00_snowflake_setup.sql` into a Snowsight worksheet. Replace `<PASTE_PUBLIC_KEY_BODY>` with the contents of `secrets/rsa_key.pub`, without the `BEGIN`/`END` lines and joined into **one line**. Then run it with **Run All** (Cmd/Ctrl+Shift+Enter). The plain Run button executes only the statement under the cursor, which fails with "Database 'NYC_TAXI' does not exist". The script is idempotent, so re-running it is safe. It creates the database, schemas, an X-Small warehouse, a resource monitor, and a least-privilege role and service user. Do not commit your edited copy.
+4. In `.env`, set `SNOWFLAKE_ACCOUNT` to the value of `SELECT CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME();`, run in Snowsight. The other defaults match the setup script.
 
 ```bash
 # 5. Build, check the connection, run everything
@@ -227,6 +227,8 @@ docker/Dockerfile    docker-compose.yml    Makefile    .github/workflows/ci.yml
 - Three months is too short to separate weather effects from seasonality.
 - The extract keeps a local copy of each file; there is no archive of what was loaded beyond the run log's checksum.
 - A new column added to the contract needs a manual `ALTER TABLE ... ADD COLUMN` on an existing RAW table.
+- The container runs as uid 1000 and writes `data/` and `dbt/target/` through a bind mount. That works on macOS and Windows (Docker Desktop); on a Linux host whose user is not uid 1000, those directories must be writable by uid 1000.
+- Verified on macOS (Apple silicon) with Docker Desktop. CI builds the image on Linux x86-64 but does not run the pipeline.
 
 ## Where this differs from the original brief
 

@@ -58,7 +58,7 @@ docs: .env ## Generate dbt docs and check every model and column is described
 	$(RUN) sh -c "dbt deps && dbt docs generate && python scripts/check_dbt_docs.py"
 
 docs-serve: .env ## Serve dbt docs at http://localhost:8080
-	$(COMPOSE) run --rm -p 8080:8080 pipeline dbt docs serve --host 0.0.0.0 --port 8080
+	$(COMPOSE) run --rm -p 8080:8080 pipeline dbt docs serve --host 0.0.0.0 --port 8080 --no-browser
 
 dbt: .env ## Run any dbt command, e.g. make dbt ARGS="build --full-refresh"
 	$(RUN) dbt $(ARGS)
